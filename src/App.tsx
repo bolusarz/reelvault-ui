@@ -1,31 +1,92 @@
-import { type DragEvent, useRef, useState } from 'react'
+import { type DragEvent, useRef, useState } from "react";
+
+const UPLOAD_URL = "http://localhost:8000/upload";
+
+type Status = "idle" | "uploading" | "done" | "error";
+
+const CHUNK_SIZE = 1 * 1024 * 1024;
+
+function sendChunk(
+  body: FormData,
+  onProgress: (loaded: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", UPLOAD_URL);
+    xhr.upload.onprogress = (e) => onProgress(e.loaded);
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300
+        ? resolve()
+        : reject(new Error(`Upload failed (${xhr.status})`));
+    xhr.onerror = () => reject(new Error("Could not reach the upload server."));
+    xhr.send(body);
+  });
+}
+
+async function uploadFile(
+  file: File,
+  onProgress: (pct: number) => void,
+): Promise<void> {
+  const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+
+  // Chain the chunks so they upload strictly one after another.
+  await Array.from({ length: totalChunks }).reduce<Promise<void>>(
+    (previous, _, index) =>
+      previous.then(() => {
+        const start = index * CHUNK_SIZE;
+        const body = new FormData();
+        body.append("fileName", file.name);
+        body.append("totalChunks", String(totalChunks));
+        body.append("chunkNumber", String(index + 1));
+        body.append("chunk", file.slice(start, start + CHUNK_SIZE), file.name);
+        return sendChunk(body, (loaded) =>
+          onProgress(
+            Math.min(100, Math.round(((start + loaded) / file.size) * 100)),
+          ),
+        );
+      }),
+    Promise.resolve(),
+  );
+  onProgress(100);
+}
 
 function formatSize(bytes: number) {
-  const mb = bytes / (1024 * 1024)
-  return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
 }
 
 export default function App() {
-  const inputRef = useRef<HTMLInputElement>(null)
-  const [file, setFile] = useState<File | null>(null)
-  const [dragging, setDragging] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<Status>("idle");
+  const [progress, setProgress] = useState(0);
 
-  const pick = (f: File | undefined) => {
-    if (!f) return
-    if (!f.type.startsWith('video/')) {
-      setError('Please choose a video file.')
-      return
+  const pick = async (f: File | undefined) => {
+    if (!f) return;
+    if (!f.type.startsWith("video/")) {
+      setError("Please choose a video file.");
+      return;
     }
-    setError(null)
-    setFile(f)
-  }
+    setError(null);
+    setFile(f);
+    setProgress(0);
+    setStatus("uploading");
+    try {
+      await uploadFile(f, setProgress);
+      setStatus("done");
+    } catch (err) {
+      setStatus("error");
+      setError(err instanceof Error ? err.message : "Upload failed.");
+    }
+  };
 
   const onDrop = (e: DragEvent) => {
-    e.preventDefault()
-    setDragging(false)
-    pick(e.dataTransfer.files[0])
-  }
+    e.preventDefault();
+    setDragging(false);
+    void pick(e.dataTransfer.files[0]);
+  };
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-8 bg-neutral-950 p-6 text-neutral-100">
@@ -38,15 +99,15 @@ export default function App() {
         type="button"
         onClick={() => inputRef.current?.click()}
         onDragOver={(e) => {
-          e.preventDefault()
-          setDragging(true)
+          e.preventDefault();
+          setDragging(true);
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
         className={`flex w-full max-w-xl cursor-pointer flex-col items-center gap-3 rounded-2xl border-2 border-dashed px-8 py-16 transition-colors ${
           dragging
-            ? 'border-violet-400 bg-violet-500/10'
-            : 'border-neutral-700 hover:border-neutral-500'
+            ? "border-violet-400 bg-violet-500/10"
+            : "border-neutral-700 hover:border-neutral-500"
         }`}
       >
         <svg
@@ -76,9 +137,13 @@ export default function App() {
         type="file"
         accept="video/*"
         className="hidden"
-        onChange={(e) => pick(e.target.files?.[0])}
+        onChange={(e) => void pick(e.target.files?.[0])}
       />
 
+      {status === "uploading" && (
+        <p className="text-neutral-300">Uploading… {progress}%</p>
+      )}
+      {status === "done" && <p className="text-green-400">Upload complete.</p>}
       {error && <p className="text-red-400">{error}</p>}
       {file && (
         <p className="text-neutral-300">
@@ -87,5 +152,5 @@ export default function App() {
         </p>
       )}
     </main>
-  )
+  );
 }
